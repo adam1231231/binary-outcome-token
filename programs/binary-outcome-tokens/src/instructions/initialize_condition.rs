@@ -1,31 +1,38 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{Mint, Token, TokenAccount};
+use solana_program::pubkey;
 
-use crate::consts::{BINARY_TOKEN_MINT_PDA, CONDITION_PDA_SEED};
+use crate::consts::CONDITION_AUTH_PDA_SEED;
 use crate::error_codes::ErrorCodes;
-use crate::state::{Condition, Outcome};
+use crate::state::{AuthAccount, Condition, Outcome};
 
 pub fn initialize_condition(
     ctx: Context<InitializeCondition>,
     name: String,
     description: String,
-    outcome_1: String,
-    outcome_2: String,
+    outcome_1_name: String,
+    outcome_2_name: String,
     collateral_per_ticket: u64,
 ) -> Result<()> {
+    let auth_pda = ctx.accounts.condition_auth_pda.key();
+
+    ctx.accounts.ticket_token_mint.token_check(auth_pda)?;
+    ctx.accounts.outcome_token_1.token_check(auth_pda)?;
+    ctx.accounts.outcome_token_2.token_check(auth_pda)?;
 
     ctx.accounts.condition.name = name;
     ctx.accounts.condition.description = description;
     ctx.accounts.condition.active = 1;
+    ctx.accounts.condition.ticket_token_mint = ctx.accounts.ticket_token_mint.key();
     ctx.accounts.condition.outcomes = vec![
         Outcome {
-            name: outcome_1,
-            token: ctx.accounts.outcome_1_token.key().to_owned(),
+            name: outcome_1_name,
+            token_mint: ctx.accounts.outcome_token_1.key().to_owned(),
             winner: 0,
         },
         Outcome {
-            name: outcome_2,
-            token: ctx.accounts.outcome_2_token.key().to_owned(),
+            name: outcome_2_name,
+            token_mint: ctx.accounts.outcome_token_2.key().to_owned(),
             winner: 0,
         },
     ];
@@ -33,58 +40,68 @@ pub fn initialize_condition(
     ctx.accounts.condition.resolution_auth = ctx.accounts.signer.key();
     ctx.accounts.condition.collateral_token = ctx.accounts.collateral_token.key();
     ctx.accounts.condition.collateral_per_ticket = collateral_per_ticket;
+    ctx.accounts.condition.collateral_vault = ctx.accounts.collateral_vault.key();
     Ok(())
 }
 
-/// Initialize a new condition.
-/// expects the following accounts:
-/// 0. `[writable, signer]` The signer of the transaction/ the owner of the condition
-/// 1. `[writable]` The PDA for the condition, control minting and vault
-/// 2. `[]` The base token mint, can be split and merged
-/// 3. `[]` The outcome 1 token mint, "half" of base token
-/// 4. `[]` The outcome 2 token mint, other "half" of base token
-/// 5. `[writable]` The condition account, holds the condition data
-/// 6. `[]` The collateral token mint, used to mint base tokens
-/// 7. `[writable]` The collateral token vault, holds the collateral tokens
-/// 8. `[]` The token program
-///
-/// expects arguements:
-/// 0. `name` The name of the condition
-/// 1. `description` The description of the condition
-/// 2. `outcome_1` The name of the first outcome
-/// 3. `outcome_2` The name of the second outcome
-/// 4. `collateral_per_ticket` The amount of collateral tokens needed to mint one ticket
-
 #[derive(Accounts)]
-#[instruction(name: String, description: String, outcome_1: String, outcome_2: String, collateral_per_ticket: u64)]
+#[instruction(name: String,
+description: String,
+outcome_1: String,
+outcome_2: String,
+collateral_per_ticket: u64)]
 pub struct InitializeCondition<'info> {
     #[account(mut)]
     signer: Signer<'info>,
 
-    #[account(init, payer = signer, seeds = [BINARY_TOKEN_MINT_PDA, base_token.key().as_ref()], bump, space = 9)]
-    condition_auth_pda: AccountInfo<'info>,
-
-    #[account(constraint = base_token.decimals > 0 @ ErrorCodes::InvalidTokenMintDecimals,
-    constraint = base_token.mint_authority.unwrap() == condition_auth_pda.key())]
-    pub base_token: Account<'info, Mint>,
-
-    #[account(constraint = outcome_1_token.decimals > 0 @ ErrorCodes::InvalidTokenMintDecimals,
-    constraint = base_token.mint_authority.unwrap() == condition_auth_pda.key() @ ErrorCodes::InvalidTokenMintAuthority)]
-    pub outcome_1_token: Account<'info, Mint>,
-
-    #[account(constraint = outcome_2_token.decimals > 0 @ ErrorCodes::InvalidTokenMintDecimals,
-    constraint = base_token.mint_authority.unwrap() == condition_auth_pda.key() @ ErrorCodes::InvalidTokenMintAuthority)]
-    pub outcome_2_token: Account<'info, Mint>,
-
-    #[account(init, payer = signer, seeds = [CONDITION_PDA_SEED, base_token.key().as_ref()], bump, space = std::mem::size_of::< Condition > ())]
+    #[account(init,
+    payer = signer,
+    space = Condition::MAX_SIZE)]
     pub condition: Box<Account<'info, Condition>>,
+
+    #[account(init,
+    seeds = [CONDITION_AUTH_PDA_SEED, condition.key().as_ref()],
+    bump,
+    payer = signer,
+    space = 9)]
+    condition_auth_pda: Account<'info, AuthAccount>,
+
+    pub ticket_token_mint: Account<'info, Mint>,
+
+    pub outcome_token_1: Account<'info, Mint>,
+
+    pub outcome_token_2: Account<'info, Mint>,
 
     pub collateral_token: Account<'info, Mint>,
 
-    #[account(init, payer = signer,token::mint= collateral_token, token::authority = condition_auth_pda)]
+    #[account(init, payer = signer, token::mint = collateral_token, token::authority = condition_auth_pda)]
     pub collateral_vault: Account<'info, TokenAccount>,
 
     pub token_program: Program<'info, Token>,
     pub system_program: Program<'info, System>,
     pub rent: Sysvar<'info, Rent>,
+}
+
+trait TokenCheck {
+    fn token_check(&self, authority : Pubkey) -> Result<()>;
+}
+
+impl TokenCheck for Mint {
+    fn token_check(&self, authority : Pubkey) -> Result<()> {
+        // checking if any of the tokens is pre-minted
+        // avoiding the condition initializer from pre minting some token and exploiting the vault
+        if self.supply > 0 {
+            return err!(ErrorCodes::SupplyNotZero);
+        }
+        // checking if token got 0 decimals since tickets aren't dividable, avoiding complexity
+        if self.decimals != 0 {
+            return err!(ErrorCodes::InvalidTokenMintDecimals);
+        }
+
+        // checking if the token mint authority is held by a PDA
+        if self.mint_authority.unwrap() != authority {
+            return err!(ErrorCodes::InvalidTokenMintAuthority);
+        }
+        Ok(())
+    }
 }
