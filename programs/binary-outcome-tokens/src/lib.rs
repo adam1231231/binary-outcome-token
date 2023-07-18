@@ -47,8 +47,8 @@ pub mod binary_outcome_tokens {
         instructions::merge_ticket(ctx, tickets_amount)
     }
 
-    pub fn announce_payout(ctx: Context<AnnouncePayout>, outcome : u64) -> Result<()> {
-        instructions::announce_payout(ctx, outcome)
+    pub fn resolve_condition(ctx: Context<ResolveCondition>, outcome : u64) -> Result<()> {
+        instructions::resolve_condition(ctx, outcome)
     }
 
     pub fn redeem_payout(ctx: Context<RedeemPayout>, tickets_amount : u64) -> Result<()> {

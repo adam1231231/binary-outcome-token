@@ -5,7 +5,7 @@ use crate::error_codes::ErrorCodes;
 use crate::state::{AuthAccount, Condition};
 
 // AnnouncePayout is called by the resolution authority to announce the outcome of the condition.
-pub fn announce_payout(ctx: Context<AnnouncePayout>, outcome : u64) -> Result<()> {
+pub fn resolve_condition(ctx: Context<ResolveCondition>, outcome : u64) -> Result<()> {
     if outcome > 1 {
         return err!(ErrorCodes::InvalidOutcome);
     }
@@ -19,7 +19,7 @@ pub fn announce_payout(ctx: Context<AnnouncePayout>, outcome : u64) -> Result<()
 
 #[derive(Accounts)]
 #[instruction(outcome: u64)]
-pub struct AnnouncePayout<'info> {
+pub struct ResolveCondition<'info> {
     #[account(mut, constraint = signer.key() == condition.resolution_auth)]
     signer: Signer<'info>,
 
